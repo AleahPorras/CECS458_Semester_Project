@@ -20,16 +20,29 @@ import glob
 
 st.set_page_config(page_title="AI Song & Caption Generatror", page_icon="🎶", layout="centered")
 
+# keeps text in textboxes a dark color
+st.markdown("""
+    <style>
+    .stTextInput input {
+        color: #2a2a2a;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+# used to retreive API keys from .env files
 def load_API():
     load_dotenv("spodify.env")
     load_dotenv("gemini.env")
 
-    # Use stable session-level cache path so the same token is reused on reruns
+    # uses stable session-level cache path so the same token is reused on reruns
+    # prevents 403/401 errors, which we were expeirenceing
     session_id = st.session_state.get("session_id", "default")
     cache_path = f".cache_{session_id}"
     st.session_state["spotify_cache_path"] = cache_path
     print(f"DEBUG: Using cache path: {cache_path}")
 
+    # testing block to see if a previous cache from a previous session was saved
+    # if present, moves to OAuthentication, if not informs system that no cache path is present.
     if os.path.exists(cache_path):
         try:
             cache_size = os.path.getsize(cache_path)
@@ -39,6 +52,7 @@ def load_API():
     else:
         print(f"DEBUG: Cache file does not exist: {cache_path}")
 
+    # authenticates that the users has granted access to Spotify to view the tracks in the playlist.
     sp = spotipy.Spotify(auth_manager=SpotifyOAuth(
         client_id=os.getenv("CLIENT_ID"),
         client_secret=os.getenv("CLIENT_SECRET"),
@@ -47,12 +61,15 @@ def load_API():
         cache_path=cache_path
     ))
 
+    # since Spotify access tokens expire, this section of code refreshes the token once it expires
     try:
         token_info = sp.auth_manager.get_cached_token()
         if token_info:
             print(f"DEBUG: Found cached token, expires: {token_info.get('expires_at', 'Unknown')}")
+            # compares the current time and the token expiration date, if current time is larger than expiration, token is invalid.
             current_time = int(time.time())
             expires_at = token_info.get('expires_at', 0)
+            # automatically renews the token once found that it has expired.
             if current_time > expires_at:
                 print("DEBUG: Token is expired, refreshing...")
                 refresh_token = token_info.get('refresh_token')
@@ -69,11 +86,14 @@ def load_API():
 
     return sp, client
 
+# since spotify URLs have a whole lotta baloney in them, this function easily seperates the playlist ID from the URL
 def fetch_playlist_ID(url): 
     """Extract playlist ID from Spotify URL with validation"""
+    # ensures that the provided URL is from spotify and is actually a playlsit.
     if not url or "spotify.com" not in url or "/playlist/" not in url:
         return None
     try:
+        # seperates the playlist ID from rest of URL
         playlist_ID = url.split("/playlist/")[1].split("?")[0]
         if len(playlist_ID) != 22:  # Spotify playlist IDs are 22 characters
             return None
@@ -81,6 +101,7 @@ def fetch_playlist_ID(url):
     except:
         return None
 
+# retrieves all the tracks from the provided playlist, uses the OAuthentcation process from loadAPI() to gain access.
 def strip_playlist(sp,playlist_ID):
     playlist_songs = []
     skipped_tracks = 0
@@ -92,12 +113,13 @@ def strip_playlist(sp,playlist_ID):
     except Exception as e:
         print(f"DEBUG: Could not get current user: {e}")
 
+    # insane debugging attempt because spotify was being stupid
     # First, try to get basic playlist info to check accessibility
     try:
         playlist_info = sp.playlist(playlist_ID, fields="name,public,owner,collaborative")
-        st.info(f"✅ Found playlist: '{playlist_info['name']}' by {playlist_info['owner']['display_name']}")
-        st.info(f"Public: {playlist_info['public']}, Collaborative: {playlist_info.get('collaborative', False)}")
-        st.info("Attempting to access playlist tracks...")
+        # st.info(f"✅ Found playlist: '{playlist_info['name']}' by {playlist_info['owner']['display_name']}")
+        # st.info(f"Public: {playlist_info['public']}, Collaborative: {playlist_info.get('collaborative', False)}")
+        # st.info("Attempting to access playlist tracks...")
         print(f"DEBUG: Playlist info retrieved successfully for {playlist_ID}")
     except Exception as e:
         st.error(f"❌ Cannot access playlist info: {str(e)}")
@@ -244,10 +266,12 @@ def strip_playlist(sp,playlist_ID):
     
     return playlist_songs
 
+# extracts pure JSON output from Gemini Output
 def extract_json_output(ai_output):
     try:
         return json.loads(ai_output)
     except json.JSONDecodeError:
+        # searches for curly brackets because JSON format is wrapped in brackets
         searching_for_json_object = re.search(r"(\{.*\})", ai_output, re.DOTALL)
         wanted_text = ""
         if searching_for_json_object:
@@ -261,6 +285,8 @@ def extract_json_output(ai_output):
 
 def main():
 
+    # stores important information about playlist songs and generated recommendations so the user doesn't lose
+    # anything when they click a button or submit feedback.
     if "track_information" not in st.session_state:
         st.session_state.track_information = None
     if "recommendations" not in st.session_state:
@@ -270,9 +296,10 @@ def main():
     if "session_id" not in st.session_state:
         st.session_state.session_id = str(hash(str(st.session_state) + str(time.time())))[:8]
 
+    # loads in the authentication status, along with the pre-determined gemini model.  
     sp, client = load_API()
 
-    # Check authentication status
+    # Error handlin: Check authentication status
     try:
         user = sp.current_user()
         print(f"DEBUG: Successfully authenticated as: {user['display_name']}")
@@ -288,7 +315,8 @@ def main():
 
     st.title("🎶 AI Song & Caption Generator")
 
-    # Account management section
+
+    # Account management section/ error handling.
     with st.expander("🔄 Account & Session Management", expanded=False):
         st.markdown("**Having issues with different accounts or playlists?**")
 
@@ -309,7 +337,7 @@ def main():
                 for key in list(st.session_state.keys()):
                     del st.session_state[key]
 
-                st.success("✅ Cache cleared! Please refresh the page and re-authenticate with your new account.")
+                st.success("Cache cleared. Refresh the page and re-authenticate with your new account.")
                 st.rerun()
 
             if st.button("🔐 Force Re-Auth", help="Force complete re-authentication even with existing cache"):
@@ -318,7 +346,7 @@ def main():
                 try:
                     if os.path.exists(cache_path):
                         os.remove(cache_path)
-                        st.success("✅ Cache cleared for current session!")
+                        st.success("Cache cleared for current session!")
                     else:
                         st.info("No cache file found for current session.")
                 except Exception as e:
@@ -326,7 +354,7 @@ def main():
 
                 # Force re-authentication by clearing auth manager
                 st.session_state.pop('spotify_auth', None)
-                st.info("🔄 Please refresh the page to re-authenticate.")
+                st.info("Refresh the page to re-authenticate.")
                 st.rerun()
 
         with col2:
@@ -338,14 +366,14 @@ def main():
                     del st.session_state.recommendations
                 if "previous_songs" in st.session_state:
                     del st.session_state.previous_songs
-                st.success("✅ New session started!")
+                st.success("New session started.")
                 st.rerun()
 
         with col3:
             if st.button("🔍 Test Connection", help="Test if Spotify API connection is working"):
                 try:
                     user = sp.current_user()
-                    st.success(f"✅ Connected to Spotify as: {user['display_name']}")
+                    st.success(f"Connected to Spotify as: {user['display_name']}")
                     st.info(f"User ID: {user['id']}")
                     st.info(f"Country: {user.get('country', 'Unknown')}")
                     st.info(f"Product: {user.get('product', 'Unknown')}")
@@ -353,12 +381,12 @@ def main():
                     # Test API access
                     try:
                         playlists = sp.current_user_playlists(limit=1)
-                        st.success("✅ API access working - can retrieve playlists")
+                        st.success("API access working - can retrieve playlists")
                     except Exception as api_e:
-                        st.warning(f"⚠️ API access issue: {str(api_e)}")
+                        st.warning(f"API access issue: {str(api_e)}")
 
                 except Exception as e:
-                    st.error(f"❌ Connection failed: {str(e)}")
+                    st.error(f"Connection failed: {str(e)}")
                     st.error("**This usually means:**")
                     st.error("• No authentication token")
                     st.error("• Expired token")
@@ -385,7 +413,7 @@ def main():
                             cleared += 1
                         except:
                             pass
-                    st.success(f"✅ Cleared {cleared} cache files!")
+                    st.success(f"Cleared {cleared} cache files!")
                     st.rerun()
 
             if st.button("🔗 Test Playlist Access", help="Test if you can access a specific playlist URL"):
@@ -393,17 +421,17 @@ def main():
                 if test_url:
                     test_id = fetch_playlist_ID(test_url)
                     if test_id:
-                        st.info(f"🔍 Testing playlist ID: {test_id}")
+                        st.info(f"Testing playlist ID: {test_id}")
 
                         # Step 1: Test basic playlist info access
                         st.write("**Step 1: Testing playlist info access...**")
                         try:
                             playlist_info = sp.playlist(test_id, fields="name,public,owner,collaborative")
-                            st.success(f"✅ Playlist info accessible: '{playlist_info['name']}'")
+                            st.success(f"Playlist info accessible: '{playlist_info['name']}'")
                             st.info(f"Owner: {playlist_info['owner']['display_name']} (ID: {playlist_info['owner']['id']})")
                             st.info(f"Public: {playlist_info['public']}, Collaborative: {playlist_info.get('collaborative', False)}")
                         except Exception as e:
-                            st.error(f"❌ Cannot access playlist info: {str(e)}")
+                            st.error(f"Cannot access playlist info: {str(e)}")
                             st.stop()
 
                         # Step 2: Test track access
@@ -419,7 +447,7 @@ def main():
                                         accessible_tracks += 1
                                 st.success(f"✅ {accessible_tracks} tracks accessible")
                             else:
-                                st.warning("⚠️ No tracks returned")
+                                st.warning("No tracks returned")
                         except Exception as e:
                             st.error(f"❌ Track access failed: {str(e)}")
 
@@ -441,17 +469,22 @@ def main():
 
                     else:
                         st.error("❌ Invalid playlist URL format")
+
+    # instructions on how to use the product
     st.markdown("" \
     "**Spodify Playlist Upload:**" \
     "\n   - Needs the **FULL URL** to fetch a playlist." \
     "\n   - Playlist needs to be **public** and less than 100 tracks.")
 
+    # saves playlist in a session state
     provided_playlist = st.text_input("Provide your Public Spotify Playlist URL: ", value=st.session_state.get('selected_playlist_url', ""))
 
+    # more instructions on how to use the product
     st.markdown("**Post Information:**\n\n - Give a short description of what your post is about.")
     post_description = st.text_input("Give a short description of what your post is about: ")
 
-    # Add playlist helper section
+    # Add playlist helper section in case the user's playlist isnt working, this is what we had lots of issues with
+    # found a workaround for it.
     with st.expander("🔍 Need Help Finding Playlists?", expanded=False):
         st.markdown("**Can't find the playlist URL you want?**")
             
@@ -495,8 +528,9 @@ def main():
             except Exception as e:
                 st.error(f"Failed to load your playlists: {str(e)}")
         
-
+    # generative button to start the Gemini API call
     if st.button("Create your Dream Post"):
+        # error handling if no playlist url or description is provided, prevents user from moving forward.
         if not provided_playlist or not post_description: 
             st.warning("Provide a Public Playlist URL and a post description.")
             st.stop()
@@ -504,16 +538,22 @@ def main():
         with st.spinner("Fetching tracks..."):
             playlist_ID = fetch_playlist_ID(provided_playlist)
             if not playlist_ID:
-                st.error("❌ Invalid playlist URL format. Please provide a valid Spotify playlist URL.")
+                # mroe error handling for proper spotify links
+                st.error("Invalid playlist URL format. Please provide a valid Spotify playlist URL.")
                 st.info("Example: https://open.spotify.com/playlist/4dHFgUF9KFUsed0Qt4cojn")
                 st.stop()
 
             try:
+                # if no tracks are located in the playlist, whole process stops and allows user to enter a new URL
+                # or add songs into their playlist
                 st.session_state.track_information = strip_playlist(sp, playlist_ID)
                 if not st.session_state.track_information:
                     st.error("No tracks found in playlist. Make sure the playlist is public and accessible with your current account.")
                     st.stop()
                 st.success(f"Playlist successfully fetched with {len(st.session_state.track_information)} tracks!")
+            # someitmes spotify is stupid and prevents the API from returning information for a variety of reasons. 
+            # this is where we were really struggling, so depending on what error status was returned, we listed out reasons as to 
+            # why they might have happened.
             except spotipy.exceptions.SpotifyException as e:
                 if e.http_status == 403:
                     st.error("❌ Access denied to playlist. This could be because:")
@@ -535,7 +575,9 @@ def main():
                 st.info("💡 If you're having account issues, try the '🔄 Switch Account' button above.")
                 st.stop()
 
+        # lets user know that their request is being process and happening behind the scenes
         with st.spinner("Creating your dream post..."):
+            # instructions for the Gemini model to follow, for the first call only uses songs that are present in the provided playlist, nothing else.
             system_instructions = ("You are a trendy music and social media expert that will pick a song from a user that would best fit their description of their post"
                                 "Don't use any songs out side of the provided songs unless the user asks for suggestions not on the playlist."
                                 "Captions should be gnerated based on the description of the post or music if its relevent to the description"
@@ -544,6 +586,7 @@ def main():
                                 )
             config = types.GenerateContentConfig(
             system_instruction=system_instructions,
+            # uses low randomness since we want the Ai to only focus on the tracks in the playlist
             temperature=0.2,
             top_p=0.9,
             top_k=40,
@@ -569,12 +612,15 @@ def main():
         config=config                  
         )
 
+        # calls the extract_json_output function to extract the desired JSON format to retrieved desired information
         json_output = extract_json_output(response.text.strip())
 
+        # stops entire process if there is an uneven number of songs to reasoning.
         if len(json_output["songs"]) != len(json_output["reasoning"]):
             st.error("Mismatch between number of song and reasonings.")
             st.stop()
 
+        # keeps persistent data of the generated recommendations.
         st.session_state.recommendations = json_output
         st.session_state.model_output_text = response.text.strip()
         # Initialize previous songs with the original recommendations to avoid duplicates
@@ -587,6 +633,7 @@ def main():
         reasoning = st.session_state.recommendations["reasoning"]
         captions = st.session_state.recommendations["captions"]
 
+        # lists out the top 3 song recommendations with song name, artist, album, and why it was chosen by the AI
         for i in range(len(song)):
             with st.expander(f"Recommendation {i+1}:  **{song[i][0]} by {song[i][1]}**", expanded = True):
                 st.markdown(f"**Album:** {song[i][2]}")
@@ -599,9 +646,12 @@ def main():
 
         st.subheader("⊹ ࣪ ˖ Here are some captions we think you will like ⊹ ࣪ ˖: ")
 
+        # lists out the generated captions/hashtags in an easy to read format
         for i, cap in enumerate(captions):
             st.write(f"{i+1}. **{cap}**")
 
+        # if user is dissatisfied with the current recommendations, they can trigger another API call doing one of two things:
+        # Getting more song recommendations from the same playlist OR getting song recommendations from songs NOT located inside of the playlist, lets the ai model do its thang.
         st.divider()
         st.write("Weren't able to find a song for your post?")
         
