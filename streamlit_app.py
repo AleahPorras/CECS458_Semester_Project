@@ -18,6 +18,7 @@ st.set_page_config(page_title="AI Song & Caption Generatror", page_icon="🎶", 
 
 def load_API():
     load_dotenv("spodify.env")
+    load_dotenv("gemini.env")
 
     sp = spotipy.Spotify(auth_manager=SpotifyOAuth(
         client_id=os.getenv("CLIENT_ID"),
@@ -143,6 +144,8 @@ def main():
 
         st.session_state.recommendations = json_output
         st.session_state.model_output_text = response.text.strip()
+        # Initialize previous songs with the original recommendations to avoid duplicates
+        st.session_state.previous_songs = json_output["songs"].copy()
 
     if st.session_state.recommendations:
         st.subheader("YOUR TOP SONG CHOICES HAVE BEEN CALCULATED! 𝄞⨾𓍢ִ໋")
@@ -168,10 +171,74 @@ def main():
 
         st.divider()
         st.write("Weren't able to find a song for your post?")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            if st.button("Get Different Recommendations!"):
+                with st.spinner("Finding different songs for you..."):
+                    config = types.GenerateContentConfig(
+                        temperature=0.9,
+                        response_mime_type="application/json",
+                    )
+                    
+                    # Get songs already recommended to exclude them
+                    previously_recommended = st.session_state.get("previous_songs", [])
+                    previous_songs_str = "; ".join([f"{song[0]} by {song[1]}" for song in previously_recommended]) if previously_recommended else "None"
+                    
+                    # Create list of available songs (excluding previous ones)
+                    available_songs = []
+                    excluded_titles = {song[0].lower() for song in previously_recommended}
+                    for song in st.session_state.track_information:
+                        if song[0].lower() not in excluded_titles:
+                            available_songs.append(song)
+                    
+                    available_songs_str = "; ".join([f"{song[0]} by {song[1]}" for song in available_songs[:30]])
+                    
+                    recommendation_instructions = [f"CRITICAL INSTRUCTION: Generate exactly 3 COMPLETELY NEW and DIFFERENT song recommendations."
+                                        f"\nYou MUST ONLY choose from these songs: {available_songs_str}"
+                                        f"\nYou MUST NEVER recommend ANY of these songs: {previous_songs_str}"
+                                        f"\nFor each recommendation, provide reasoning on why it matches the vibe: {post_description}"
+                                        f"\nGenerate new unique captions based on: {post_description}"
+                                        "\nReturn ONLY valid JSON with these 3 keys:"
+                                        "\n- songs: list of [Song Name, Artist Name, Album Name] (MUST be different from excluded list)"
+                                        "\n- reasoning: list of reasoning for each song choice"
+                                        "\n- captions: list of new unique captions"
+                                        f"\nEXCLUDED (Never use): {previous_songs_str}"
+                                        f"\nALLOWED (Only use): {available_songs_str}"]
+                    
+                    response = client.models.generate_content(
+                        model='gemini-2.5-pro',
+                        contents=recommendation_instructions,
+                        config=config
+                    )
+                    
+                    new_json_output = extract_json_output(response.text.strip())
+                    
+                    new_song = new_json_output["songs"]
+                    new_reasoning = new_json_output["reasoning"]
+                    new_captions = new_json_output["captions"]
+                    
+                    # Store these songs as previously recommended
+                    if "previous_songs" not in st.session_state:
+                        st.session_state.previous_songs = []
+                    st.session_state.previous_songs.extend(new_song)
+                    
+                    st.subheader("YOUR NEW TOP SONG CHOICES! 𝄞⨾𓍢ִ໋")
+                    
+                    for i in range(len(new_song)):
+                        with st.expander(f"Recommendation {i+1}: **{new_song[i][0]} by {new_song[i][1]}**", expanded=True):
+                            st.markdown(f"**Album:** {new_song[i][2]}")
+                            st.markdown(f"**Reasoning:** {new_reasoning[i]}")
+                    
+                    st.subheader("⊹ ࣪ ˖ Here are some new captions we think you will like ⊹ ࣪ ˖: ")
+                    for i, cap in enumerate(new_captions):
+                        st.write(f"{i+1}. **{cap}**")
 
-        if st.button("Find songs not on the playlist!"):
-            with st.spinner("Searching for new songs..."):
-                config = types.GenerateContentConfig(
+        with col2:
+            if st.button("Find songs not on the playlist!"):
+                with st.spinner("Searching for new songs..."):
+                    config = types.GenerateContentConfig(
                     temperature = 0.4,
                     response_mime_type = "application/json",
                 )
